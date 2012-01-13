@@ -229,6 +229,14 @@ if [ ! -n "$HOST_IP" ]; then
         echo "Please specify your HOST_IP in your localrc."
         exit 1
     fi
+elif [[ $HOST_IP == dhcp* ]]; then
+    HOST_IP_IFACE=$(echo $HOST_IP | cut -d'-' -f 2)
+    HOST_IP=`LC_ALL=C /sbin/ifconfig ${HOST_IP_IFACE} | grep -m 1 'inet addr:'| cut -d: -f2 | awk '{print $1}'`
+    if [ "$HOST_IP" = "" ]; then
+        echo "Could not determine host ip address."
+        echo "localrc specified dhcp on ${HOST_IP_IFACE}"
+        exit 1
+    fi
 fi
 
 # Allow the use of an alternate hostname (such as localhost/127.0.0.1) for service endpoints.
@@ -1269,8 +1277,11 @@ if [ "$VIRT_DRIVER" = 'xenserver' ]; then
     add_nova_flag "--flat_network_bridge=xapi1"
     add_nova_flag "--public_interface=eth3"
     # Need to avoid crash due to new firewall support
-    XEN_FIREWALL_DRIVER=${XEN_FIREWALL_DRIVER:-"nova.virt.firewall.IptablesFirewallDriver"}
+    XEN_FIREWALL_DRIVER=${XEN_FIREWALL_DRIVER:-"nova.virt.xenapi.firewall.Dom0IptablesFirewallDriver"}
     add_nova_flag "--firewall_driver=$XEN_FIREWALL_DRIVER"
+    AGENT_VERSION_TIMEOUT=${AGENT_VERSION_TIMEOUT:-"300"}
+    add_nova_flag "--agent_version_timeout=$AGENT_VERSION_TIMEOUT"
+    add_nova_flag "--sr_matching_filter=default-sr:true"
 else
     add_nova_flag "--connection_type=libvirt"
     LIBVIRT_FIREWALL_DRIVER=${LIBVIRT_FIREWALL_DRIVER:-"nova.virt.libvirt.firewall.IptablesFirewallDriver"}
