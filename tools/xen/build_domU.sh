@@ -148,15 +148,15 @@ then
 fi
 if [ -z $MGT_BR ]
 then
-    VM_BR=$(xe network-list --minimal uuid=$MGT_NET params=bridge)
+    MGT_BR=$(xe network-list --minimal uuid=$MGT_NET params=bridge)
 fi
 if [ -z $PUB_BR ]
 then
-    VM_BR=$(xe network-list --minimal uuid=$PUB_NET params=bridge)
+    PUB_BR=$(xe network-list --minimal uuid=$PUB_NET params=bridge)
 fi
 
 VM_RAM=1280
-$TOP_DIR/scripts/install-os-vpx.sh -f $XVA -v $VM_BR -m $MGT_BR -p $PUB_BR -l $GUEST_NAME -r $VM_RAM -w
+$TOP_DIR/scripts/install-os-vpx.sh -f $XVA -v $VM_BR -m $MGT_BR -p $PUB_BR -l $GUEST_NAME -r $VM_RAM -w -k "flat_network_bridge=${VM_BR}"
 
 # If we have copied our ssh credentials, use ssh to monitor while the installation runs
 WAIT_TILL_LAUNCH=${WAIT_TILL_LAUNCH:-1}
