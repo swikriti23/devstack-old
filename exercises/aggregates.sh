@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 
+#
 # Test the aggregate feature
+#
 
 # load the osapi common
-. osapi.common
+thisdir=$(dirname $(readlink -f "$0"))
+source "$thisdir/osapi.common"
 
 # need to access using admin credentials
 load_admin_token

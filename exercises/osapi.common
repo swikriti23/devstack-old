@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
 
-# **exercise.sh** - using the cloud can be fun
-
-# we will use the ``nova`` cli tool provided by the ``python-novaclient``
-# package
-#
-
+# Attempt to pull out common code between the different exercise.sh scripts
 
 # This script exits on an error so that errors don't compound and you see
 # only the first error that occured.
