@@ -181,13 +181,13 @@ if [ "$COPYENV" = "1" ]; then
     cp_it ~/.bashrc $STAGING_DIR/opt/stack/.bashrc
 fi
 
+ENABLED_SERVICES=${ENABLED_SERVICES:-g-api,g-reg,key,n-api,n-crt,n-obj,n-cpu,n-net,n-sch,n-novnc,n-xvnc,n-cauth,horizon,mysql,rabbit,n-vol}
 # Configure run.sh
 cat <<EOF >$STAGING_DIR/opt/stack/run.sh
 #!/bin/bash
 cd /opt/stack/devstack
 killall screen
-ENABLED_SERVICES="g-api,g-reg,key,n-api,n-crt,n-obj,n-cpu,n-net,n-sch,n-novnc,n-xvnc,n-cauth,horizon,mysql,rabbit,n-vol"
-STACKSH_PARAMS="${STACKSH_PARAMS} ENABLED_SERVICES=${ENABLED_SERVICES}"
+STACKSH_PARAMS="$STACKSH_PARAMS ENABLED_SERVICES=$ENABLED_SERVICES"
 UPLOAD_LEGACY_TTY=yes HOST_IP=$PUB_IP VIRT_DRIVER=xenserver FORCE=yes MULTI_HOST=1 $STACKSH_PARAMS ./stack.sh
 EOF
 chmod 755 $STAGING_DIR/opt/stack/run.sh
