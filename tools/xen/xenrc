@@ -39,4 +39,4 @@ XVA_DIR=${XVA_DIR:-xvas}
 XVA=${XVA:-$XVA_DIR/$GUEST_NAME.xva }
 
 # Source params
-(cd ../.. && source ./stackrc)
+cd ../.. && source ./stackrc && cd $TOP_DIR
