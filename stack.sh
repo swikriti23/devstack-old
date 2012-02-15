@@ -1272,19 +1272,20 @@ VMBR=$(grep -o 'flat_network_bridge=[^.]*' /proc/cmdline | cut -d= -f 2)
 if [ "$VIRT_DRIVER" = 'xenserver' ]; then
     read_password XENAPI_PASSWORD "ENTER A PASSWORD TO USE FOR XEN."
     add_nova_flag "--connection_type=xenapi"
-    add_nova_flag "--xenapi_connection_url=http://169.254.0.1"
+    XENAPI_CONNECTION_URL=${XENAPI_CONNECTION_URL:-"http://169.254.0.1"}
+    add_nova_flag "--xenapi_connection_url=$XENAPI_CONNECTION_URL"
     add_nova_flag "--xenapi_connection_username=root"
     add_nova_flag "--xenapi_connection_password=$XENAPI_PASSWORD"
     add_nova_flag "--noflat_injected"
     add_nova_flag "--flat_interface=eth1"
     add_nova_flag "--flat_network_bridge=${VMBR}"
     add_nova_flag "--public_interface=${HOST_IP_IFACE}"
-    # Need to avoid crash due to new firewall support
     XEN_FIREWALL_DRIVER=${XEN_FIREWALL_DRIVER:-"nova.virt.xenapi.firewall.Dom0IptablesFirewallDriver"}
     add_nova_flag "--firewall_driver=$XEN_FIREWALL_DRIVER"
     AGENT_VERSION_TIMEOUT=${AGENT_VERSION_TIMEOUT:-"300"}
     add_nova_flag "--agent_version_timeout=$AGENT_VERSION_TIMEOUT"
     add_nova_flag "--sr_matching_filter=default-sr:true"
+    add_nova_flag "--scheduler_live_migration_skip_shared_storage_check"
 else
     add_nova_flag "--connection_type=libvirt"
     LIBVIRT_FIREWALL_DRIVER=${LIBVIRT_FIREWALL_DRIVER:-"nova.virt.libvirt.firewall.IptablesFirewallDriver"}
