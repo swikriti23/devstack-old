@@ -77,6 +77,12 @@ cp $FILES_DIR/hvc0.conf $STAGING_DIR/etc/init/
 # Put the VPX into UTC.
 rm -f $STAGING_DIR/etc/localtime
 
+<<<<<<< HEAD
+=======
+# Configure dns (use same dns as dom0)
+cp /etc/resolv.conf $STAGING_DIR/etc/resolv.conf
+
+>>>>>>> cbmaster
 # Copy over devstack
 rm -f /tmp/devstack.tar
 tar --exclude='stage' --exclude='xen/xvas' --exclude='xen/nova' -cvf /tmp/devstack.tar $TOP_DIR/../../../devstack
@@ -99,13 +105,18 @@ sed -e "s,@BUILD_NUMBER@,$BUILD_NUMBER,g" -i $OVA
 
 # Run devstack on launch
 cat <<EOF >$STAGING_DIR/etc/rc.local
+<<<<<<< HEAD
 # network restart required for getting the right gateway
 /etc/init.d/networking restart
 GUEST_PASSWORD=$GUEST_PASSWORD STAGING_DIR=/ DO_TGZ=0 bash /opt/stack/devstack/tools/xen/prepare_guest.sh > /opt/stack/prepare_guest.log 2>&1
+=======
+GUEST_PASSWORD=$GUEST_PASSWORD STAGING_DIR=/ DO_TGZ=0 bash /opt/stack/devstack/tools/xen/prepare_guest.sh
+>>>>>>> cbmaster
 su -c "/opt/stack/run.sh > /opt/stack/run.sh.log" stack
 exit 0
 EOF
 
+<<<<<<< HEAD
 # apt-cache for santa clara (citrix)
 if [ $SCAPTPROXY == "yes" ]
 then
@@ -114,6 +125,8 @@ Acquire::http { Proxy "http://apt:3142"; };
 EOF
 fi
 
+=======
+>>>>>>> cbmaster
 # Clean old xva. In the future may not do this every time.
 rm -f $XVA
 
@@ -129,6 +142,7 @@ EOF
 # Configure the network
 INTERFACES=$STAGING_DIR/etc/network/interfaces
 cp $TEMPLATES_DIR/interfaces.in  $INTERFACES
+<<<<<<< HEAD
 if [ $VM_IP == "dhcp" ]
 then
     echo 'eth1 on dhcp'
@@ -163,6 +177,14 @@ fi
 if [ -h $STAGING_DIR/sbin/dhclient3 ]; then
     rm -f $STAGING_DIR/sbin/dhclient3
 fi
+=======
+sed -e "s,@ETH1_IP@,$VM_IP,g" -i $INTERFACES
+sed -e "s,@ETH1_NETMASK@,$VM_NETMASK,g" -i $INTERFACES
+sed -e "s,@ETH2_IP@,$MGT_IP,g" -i $INTERFACES
+sed -e "s,@ETH2_NETMASK@,$MGT_NETMASK,g" -i $INTERFACES
+sed -e "s,@ETH3_IP@,$PUB_IP,g" -i $INTERFACES
+sed -e "s,@ETH3_NETMASK@,$PUB_NETMASK,g" -i $INTERFACES
+>>>>>>> cbmaster
 
 # Gracefully cp only if source file/dir exists
 function cp_it {

@@ -35,6 +35,9 @@ fi
 # Keep track of the current devstack directory.
 TOP_DIR=$(cd $(dirname "$0") && pwd)
 
+# Import common functions
+. $TOP_DIR/functions
+
 # stack.sh keeps the list of **apt** and **pip** dependencies in external
 # files, along with config templates and other useful files.  You can find these
 # in the ``files`` directory (next to this script).  We will reference this
@@ -86,18 +89,8 @@ source ./stackrc
 # Destination path for installation ``DEST``
 DEST=${DEST:-/opt/stack}
 
-# apt-get wrapper to just get arguments set correctly
-function apt_get() {
-    [[ "$OFFLINE" = "True" ]] && return
-    local sudo="sudo"
-    [ "$(id -u)" = "0" ] && sudo="env"
-    $sudo DEBIAN_FRONTEND=noninteractive \
-        http_proxy=$http_proxy https_proxy=$https_proxy \
-        apt-get --option "Dpkg::Options::=--force-confold" --assume-yes "$@"
-}
-
 # Check to see if we are already running a stack.sh
-if screen -ls | egrep -q "[0-9].stack"; then
+if type -p screen >/dev/null && screen -ls | egrep -q "[0-9].stack"; then
     echo "You are already running a stack.sh session."
     echo "To rejoin this session type 'screen -x stack'."
     echo "To destroy this session, kill the running screen."
@@ -154,18 +147,6 @@ else
     sudo chown root:root $TEMPFILE
     sudo mv $TEMPFILE /etc/sudoers.d/stack_sh_nova
 fi
-
-# Normalize config values to True or False
-# VAR=`trueorfalse default-value test-value`
-function trueorfalse() {
-    local default=$1
-    local testval=$2
-
-    [[ -z "$testval" ]] && { echo "$default"; return; }
-    [[ "0 no false False FALSE" =~ "$testval" ]] && { echo "False"; return; }
-    [[ "1 yes true True TRUE" =~ "$testval" ]] && { echo "True"; return; }
-    echo "$default"
-}
 
 # Set True to configure stack.sh to run cleanly without Internet access.
 # stack.sh must have been previously run with Internet access to install
@@ -291,6 +272,27 @@ function read_password {
     set -o xtrace
 }
 
+# This function will check if the service(s) specified in argument is
+# enabled by the user in ENABLED_SERVICES.
+#
+# If there is multiple services specified as argument it will act as a
+# boolean OR or if any of the services specified on the command line
+# return true.
+#
+# There is a special cases for some 'catch-all' services :
+#      nova would catch if any service enabled start by n-
+#    glance would catch if any service enabled start by g-
+#   quantum would catch if any service enabled start by q-
+function is_service_enabled() {
+    services=$@
+    for service in ${services}; do
+        [[ ,${ENABLED_SERVICES}, =~ ,${service}, ]] && return 0
+        [[ ${service} == "nova" && ${ENABLED_SERVICES} =~ "n-" ]] && return 0
+        [[ ${service} == "glance" && ${ENABLED_SERVICES} =~ "g-" ]] && return 0
+        [[ ${service} == "quantum" && ${ENABLED_SERVICES} =~ "q-" ]] && return 0
+    done
+    return 1
+}
 
 # Nova Network Configuration
 # --------------------------
@@ -298,14 +300,14 @@ function read_password {
 # FIXME: more documentation about why these are important flags.  Also
 # we should make sure we use the same variable names as the flag names.
 
-PUBLIC_INTERFACE=${PUBLIC_INTERFACE:-eth0}
+PUBLIC_INTERFACE=${PUBLIC_INTERFACE:-br100}
 FIXED_RANGE=${FIXED_RANGE:-10.0.0.0/24}
 FIXED_NETWORK_SIZE=${FIXED_NETWORK_SIZE:-256}
 FLOATING_RANGE=${FLOATING_RANGE:-172.24.4.224/28}
 NET_MAN=${NET_MAN:-FlatDHCPManager}
 EC2_DMZ_HOST=${EC2_DMZ_HOST:-$SERVICE_HOST}
 FLAT_NETWORK_BRIDGE=${FLAT_NETWORK_BRIDGE:-br100}
-VLAN_INTERFACE=${VLAN_INTERFACE:-$PUBLIC_INTERFACE}
+VLAN_INTERFACE=${VLAN_INTERFACE:-eth0}
 
 # Test floating pool and range are used for testing.  They are defined
 # here until the admin APIs can replace nova-manage
@@ -411,7 +413,7 @@ SWIFT_LOOPBACK_DISK_SIZE=${SWIFT_LOOPBACK_DISK_SIZE:-1000000}
 SWIFT_PARTITION_POWER_SIZE=${SWIFT_PARTITION_POWER_SIZE:-9}
 
 # We only ask for Swift Hash if we have enabled swift service.
-if [[ "$ENABLED_SERVICES" =~ "swift" ]]; then
+if is_service_enabled swift; then
     # SWIFT_HASH is a random unique string for a swift cluster that
     # can never change.
     read_password SWIFT_HASH "ENTER A RANDOM SWIFT HASH."
@@ -550,14 +552,6 @@ function get_packages() {
     done
 }
 
-function pip_install {
-    [[ "$OFFLINE" = "True" ]] && return
-    sudo PIP_DOWNLOAD_CACHE=/var/cache/pip \
-        HTTP_PROXY=$http_proxy \
-        HTTPS_PROXY=$https_proxy \
-        pip install --use-mirrors $@
-}
-
 # install apt requirements
 apt_get update
 apt_get install $(get_packages)
@@ -565,93 +559,47 @@ apt_get install $(get_packages)
 # install python requirements
 pip_install `cat $FILES/pips/* | uniq`
 
-# git clone only if directory doesn't exist already.  Since ``DEST`` might not
-# be owned by the installation user, we create the directory and change the
-# ownership to the proper user.
-function git_clone {
-    [[ "$OFFLINE" = "True" ]] && return
-
-    GIT_REMOTE=$1
-    GIT_DEST=$2
-    GIT_BRANCH=$3
-
-    if echo $GIT_BRANCH | egrep -q "^refs"; then
-        # If our branch name is a gerrit style refs/changes/...
-        if [ ! -d $GIT_DEST ]; then
-            git clone $GIT_REMOTE $GIT_DEST
-        fi
-        cd $GIT_DEST
-        git fetch $GIT_REMOTE $GIT_BRANCH && git checkout FETCH_HEAD
-    else
-        # do a full clone only if the directory doesn't exist
-        if [ ! -d $GIT_DEST ]; then
-            git clone $GIT_REMOTE $GIT_DEST
-            cd $GIT_DEST
-            # This checkout syntax works for both branches and tags
-            git checkout $GIT_BRANCH
-        elif [[ "$RECLONE" == "yes" ]]; then
-            # if it does exist then simulate what clone does if asked to RECLONE
-            cd $GIT_DEST
-            # set the url to pull from and fetch
-            git remote set-url origin $GIT_REMOTE
-            git fetch origin
-            # remove the existing ignored files (like pyc) as they cause breakage
-            # (due to the py files having older timestamps than our pyc, so python
-            # thinks the pyc files are correct using them)
-            find $GIT_DEST -name '*.pyc' -delete
-            git checkout -f origin/$GIT_BRANCH
-            # a local branch might not exist
-            git branch -D $GIT_BRANCH || true
-            git checkout -b $GIT_BRANCH
-        fi
-    fi
-}
-
 # compute service
 git_clone $NOVA_REPO $NOVA_DIR $NOVA_BRANCH
 # python client library to nova that horizon (and others) use
+git_clone $KEYSTONECLIENT_REPO $KEYSTONECLIENT_DIR $KEYSTONECLIENT_BRANCH
 git_clone $NOVACLIENT_REPO $NOVACLIENT_DIR $NOVACLIENT_BRANCH
 
 # glance, swift middleware and nova api needs keystone middleware
-if [[ "$ENABLED_SERVICES" =~ "key" ||
-      "$ENABLED_SERVICES" =~ "g-api" ||
-      "$ENABLED_SERVICES" =~ "n-api" ||
-      "$ENABLED_SERVICES" =~ "swift" ]]; then
+if is_service_enabled key g-api n-api swift; then
     # unified auth system (manages accounts/tokens)
     git_clone $KEYSTONE_REPO $KEYSTONE_DIR $KEYSTONE_BRANCH
 fi
-if [[ "$ENABLED_SERVICES" =~ "swift" ]]; then
+if is_service_enabled swift; then
     # storage service
     git_clone $SWIFT_REPO $SWIFT_DIR $SWIFT_BRANCH
     # swift + keystone middleware
     git_clone $SWIFT_KEYSTONE_REPO $SWIFT_KEYSTONE_DIR $SWIFT_KEYSTONE_BRANCH
 fi
-if [[ "$ENABLED_SERVICES" =~ "g-api" ||
-      "$ENABLED_SERVICES" =~ "n-api" ]]; then
+if is_service_enabled g-api n-api; then
     # image catalog service
     git_clone $GLANCE_REPO $GLANCE_DIR $GLANCE_BRANCH
 fi
-if [[ "$ENABLED_SERVICES" =~ "n-novnc" ]]; then
+if is_service_enabled n-novnc; then
     # a websockets/html5 or flash powered VNC console for vm instances
     git_clone $NOVNC_REPO $NOVNC_DIR $NOVNC_BRANCH
 fi
-if [[ "$ENABLED_SERVICES" =~ "horizon" ]]; then
+if is_service_enabled horizon; then
     # django powered web control panel for openstack
     git_clone $HORIZON_REPO $HORIZON_DIR $HORIZON_BRANCH $HORIZON_TAG
-    git_clone $KEYSTONECLIENT_REPO $KEYSTONECLIENT_DIR $KEYSTONECLIENT_BRANCH
 fi
-if [[ "$ENABLED_SERVICES" =~ "q-svc" ]]; then
+if is_service_enabled q-svc; then
     # quantum
     git_clone $QUANTUM_REPO $QUANTUM_DIR $QUANTUM_BRANCH
     git_clone $QUANTUM_CLIENT_REPO $QUANTUM_CLIENT_DIR $QUANTUM_CLIENT_BRANCH
 fi
 
-if [[ "$ENABLED_SERVICES" =~ "m-svc" ]]; then
+if is_service_enabled m-svc; then
     # melange
     git_clone $MELANGE_REPO $MELANGE_DIR $MELANGE_BRANCH
 fi
 
-if [[ "$ENABLED_SERVICES" =~ "melange" ]]; then
+if is_service_enabled melange; then
     git_clone $MELANGECLIENT_REPO $MELANGECLIENT_DIR $MELANGECLIENT_BRANCH
 fi
 
@@ -661,34 +609,30 @@ fi
 
 # setup our checkouts so they are installed into python path
 # allowing ``import nova`` or ``import glance.client``
-if [[ "$ENABLED_SERVICES" =~ "key" ||
-      "$ENABLED_SERVICES" =~ "g-api" ||
-      "$ENABLED_SERVICES" =~ "n-api" ||
-      "$ENABLED_SERVICES" =~ "swift" ]]; then
+cd $KEYSTONECLIENT_DIR; sudo python setup.py develop
+cd $NOVACLIENT_DIR; sudo python setup.py develop
+if is_service_enabled key g-api n-api swift; then
     cd $KEYSTONE_DIR; sudo python setup.py develop
 fi
-if [[ "$ENABLED_SERVICES" =~ "swift" ]]; then
+if is_service_enabled swift; then
     cd $SWIFT_DIR; sudo python setup.py develop
     cd $SWIFT_KEYSTONE_DIR; sudo python setup.py develop
 fi
-if [[ "$ENABLED_SERVICES" =~ "g-api" ||
-      "$ENABLED_SERVICES" =~ "n-api" ]]; then
+if is_service_enabled g-api n-api; then
     cd $GLANCE_DIR; sudo python setup.py develop
 fi
-cd $NOVACLIENT_DIR; sudo python setup.py develop
 cd $NOVA_DIR; sudo python setup.py develop
-if [[ "$ENABLED_SERVICES" =~ "horizon" ]]; then
-    cd $KEYSTONECLIENT_DIR; sudo python setup.py develop
+if is_service_enabled horizon; then
     cd $HORIZON_DIR/horizon; sudo python setup.py develop
     cd $HORIZON_DIR/openstack-dashboard; sudo python setup.py develop
 fi
-if [[ "$ENABLED_SERVICES" =~ "q-svc" ]]; then
+if is_service_enabled q-svc; then
     cd $QUANTUM_DIR; sudo python setup.py develop
 fi
-if [[ "$ENABLED_SERVICES" =~ "m-svc" ]]; then
+if is_service_enabled m-svc; then
     cd $MELANGE_DIR; sudo python setup.py develop
 fi
-if [[ "$ENABLED_SERVICES" =~ "melange" ]]; then
+if is_service_enabled melange; then
     cd $MELANGECLIENT_DIR; sudo python setup.py develop
 fi
 
@@ -717,7 +661,7 @@ fi
 # Rabbit
 # ---------
 
-if [[ "$ENABLED_SERVICES" =~ "rabbit" ]]; then
+if is_service_enabled rabbit; then
     # Install and start rabbitmq-server
     # the temp file is necessary due to LP: #878600
     tfile=$(mktemp)
@@ -731,7 +675,7 @@ fi
 # Mysql
 # ---------
 
-if [[ "$ENABLED_SERVICES" =~ "mysql" ]]; then
+if is_service_enabled mysql; then
 
     # Seed configuration with mysql password so that apt-get install doesn't
     # prompt us for a password upon install.
@@ -770,7 +714,7 @@ fi
 
 # Setup the django horizon application to serve via apache/wsgi
 
-if [[ "$ENABLED_SERVICES" =~ "horizon" ]]; then
+if is_service_enabled horizon; then
 
     # Install apache2, which is NOPRIME'd
     apt_get install apache2 libapache2-mod-wsgi
@@ -787,7 +731,7 @@ if [[ "$ENABLED_SERVICES" =~ "horizon" ]]; then
     cp $FILES/horizon_settings.py $local_settings
 
     # Enable quantum in dashboard, if requested
-    if [[ "$ENABLED_SERVICES" =~ "quantum" ]]; then
+    if is_service_enabled quantum; then
         sudo sed -e "s,QUANTUM_ENABLED = False,QUANTUM_ENABLED = True,g" -i $local_settings
     fi
 
@@ -813,7 +757,7 @@ fi
 # Glance
 # ------
 
-if [[ "$ENABLED_SERVICES" =~ "g-reg" ]]; then
+if is_service_enabled g-reg; then
     GLANCE_IMAGE_DIR=$DEST/glance/images
     # Delete existing images
     rm -rf $GLANCE_IMAGE_DIR
@@ -870,20 +814,28 @@ fi
 
 # Nova
 # ----
-if [[ "$ENABLED_SERVICES" =~ "n-api" ]]; then
+
+# Put config files in /etc/nova for everyone to find
+NOVA_CONF=/etc/nova
+if [[ ! -d $NOVA_CONF ]]; then
+    sudo mkdir -p $NOVA_CONF
+fi
+sudo chown `whoami` $NOVA_CONF
+
+if is_service_enabled n-api; then
     # We are going to use a sample http middleware configuration based on the
     # one from the keystone project to launch nova.  This paste config adds
     # the configuration required for nova to validate keystone tokens.
 
     # First we add a some extra data to the default paste config from nova
-    cp $NOVA_DIR/etc/nova/api-paste.ini $NOVA_DIR/bin/nova-api-paste.ini
+    cp $NOVA_DIR/etc/nova/api-paste.ini $NOVA_CONF
 
     # Then we add our own service token to the configuration
-    sed -e "s,%SERVICE_TOKEN%,$SERVICE_TOKEN,g" -i $NOVA_DIR/bin/nova-api-paste.ini
+    sed -e "s,%SERVICE_TOKEN%,$SERVICE_TOKEN,g" -i $NOVA_CONF/api-paste.ini
 
     # Finally, we change the pipelines in nova to use keystone
     function replace_pipeline() {
-        sed "/\[pipeline:$1\]/,/\[/s/^pipeline = .*/pipeline = $2/" -i $NOVA_DIR/bin/nova-api-paste.ini
+        sed "/\[pipeline:$1\]/,/\[/s/^pipeline = .*/pipeline = $2/" -i $NOVA_CONF/api-paste.ini
     }
     replace_pipeline "ec2cloud" "ec2faultwrap logrequest totoken authtoken keystonecontext cloudrequest authorizer validator ec2executor"
     replace_pipeline "ec2admin" "ec2faultwrap logrequest totoken authtoken keystonecontext adminrequest authorizer ec2executor"
@@ -903,7 +855,7 @@ function clean_iptables() {
     sudo iptables -S -v -t nat | sed "s/-c [0-9]* [0-9]* //g" | grep "nova" |  grep "\-N" | sed "s/-N/-X/g" | awk '{print "sudo iptables -t nat",$0}' | bash
 }
 
-if [[ "$ENABLED_SERVICES" =~ "n-cpu" ]]; then
+if is_service_enabled n-cpu; then
 
     # Virtualization Configuration
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -976,11 +928,15 @@ if [[ "$ENABLED_SERVICES" =~ "n-cpu" ]]; then
         echo $instances | xargs -n1 virsh undefine || true
     fi
 
+    # Logout and delete iscsi sessions
+    sudo iscsiadm --mode node | grep $VOLUME_NAME_PREFIX | cut -d " " -f2 | xargs sudo iscsiadm --mode node --logout || true
+    sudo iscsiadm --mode node | grep $VOLUME_NAME_PREFIX | cut -d " " -f2 | sudo iscsiadm --mode node --op delete || true
+
     # Clean out the instances directory.
     sudo rm -rf $NOVA_DIR/instances/*
 fi
 
-if [[ "$ENABLED_SERVICES" =~ "n-net" ]]; then
+if is_service_enabled n-net; then
     # Delete traces of nova networks from prior runs
     sudo killall dnsmasq || true
     clean_iptables
@@ -989,7 +945,7 @@ if [[ "$ENABLED_SERVICES" =~ "n-net" ]]; then
 fi
 
 # Storage Service
-if [[ "$ENABLED_SERVICES" =~ "swift" ]]; then
+if is_service_enabled swift; then
     # We first do a bit of setup by creating the directories and
     # changing the permissions so we can run it as our user.
 
@@ -1048,18 +1004,12 @@ if [[ "$ENABLED_SERVICES" =~ "swift" ]]; then
    # By default Swift will be installed with the tempauth middleware
    # which has some default username and password if you have
    # configured keystone it will checkout the directory.
-   if [[ "$ENABLED_SERVICES" =~ "key" ]]; then
+   if is_service_enabled key; then
        swift_auth_server=keystone
 
        # We install the memcache server as this is will be used by the
        # middleware to cache the tokens auths for a long this is needed.
        apt_get install memcached
-
-       # We need a special version of bin/swift which understand the
-       # OpenStack api 2.0, we download it until this is getting
-       # integrated in swift.
-       sudo https_proxy=$https_proxy curl -s -o/usr/local/bin/swift \
-           'https://review.openstack.org/gitweb?p=openstack/swift.git;a=blob_plain;f=bin/swift;hb=48bfda6e2fdf3886c98bd15649887d54b9a2574e'
    else
        swift_auth_server=tempauth
    fi
@@ -1131,7 +1081,7 @@ fi
 # Volume Service
 # --------------
 
-if [[ "$ENABLED_SERVICES" =~ "n-vol" ]]; then
+if is_service_enabled n-vol; then
     #
     # Configure a default volume group called 'nova-volumes' for the nova-volume
     # service if it does not yet exist.  If you don't wish to use a file backed
@@ -1154,15 +1104,12 @@ if [[ "$ENABLED_SERVICES" =~ "n-vol" ]]; then
     fi
 
     if sudo vgs $VOLUME_GROUP; then
+        # Remove nova iscsi targets
+        sudo tgtadm --op show --mode target | grep $VOLUME_NAME_PREFIX | grep Target | cut -f3 -d ' ' | sudo xargs -n1 tgt-admin --delete || true
         # Clean out existing volumes
         for lv in `sudo lvs --noheadings -o lv_name $VOLUME_GROUP`; do
             # VOLUME_NAME_PREFIX prefixes the LVs we want
             if [[ "${lv#$VOLUME_NAME_PREFIX}" != "$lv" ]]; then
-                tid=`egrep "^tid.+$lv" /proc/net/iet/volume | cut -f1 -d' ' | tr ':' '='`
-                if [[ -n "$tid" ]]; then
-                    lun=`egrep "lun.+$lv" /proc/net/iet/volume | cut -f1 -d' ' | tr ':' '=' | tr -d '\t'`
-                    sudo ietadm --op delete --$tid --$lun
-                fi
                 sudo lvremove -f $VOLUME_GROUP/$lv
             fi
         done
@@ -1175,31 +1122,31 @@ if [[ "$ENABLED_SERVICES" =~ "n-vol" ]]; then
 fi
 
 function add_nova_flag {
-    echo "$1" >> $NOVA_DIR/bin/nova.conf
+    echo "$1" >> $NOVA_CONF/nova.conf
 }
 
 # (re)create nova.conf
-rm -f $NOVA_DIR/bin/nova.conf
+rm -f $NOVA_CONF/nova.conf
 add_nova_flag "--verbose"
 add_nova_flag "--allow_admin_api"
 add_nova_flag "--scheduler_driver=$SCHEDULER"
 add_nova_flag "--dhcpbridge_flagfile=$NOVA_DIR/bin/nova.conf"
 add_nova_flag "--fixed_range=$FIXED_RANGE"
-if [[ "$ENABLED_SERVICES" =~ "n-obj" ]]; then
+if is_service_enabled n-obj; then
     add_nova_flag "--s3_host=$SERVICE_HOST"
 fi
-if [[ "$ENABLED_SERVICES" =~ "quantum" ]]; then
+if is_service_enabled quantum; then
     add_nova_flag "--network_manager=nova.network.quantum.manager.QuantumManager"
     add_nova_flag "--quantum_connection_host=$Q_HOST"
     add_nova_flag "--quantum_connection_port=$Q_PORT"
 
-    if [[ "$ENABLED_SERVICES" =~ "melange" ]]; then
+    if is_service_enabled melange; then
         add_nova_flag "--quantum_ipam_lib=nova.network.quantum.melange_ipam_lib"
         add_nova_flag "--use_melange_mac_generation"
         add_nova_flag "--melange_host=$M_HOST"
         add_nova_flag "--melange_port=$M_PORT"
     fi
-    if [[ "$ENABLED_SERVICES" =~ "q-svc" && "$Q_PLUGIN" = "openvswitch" ]]; then
+    if is_service_enabled q-svc && [[ "$Q_PLUGIN" = "openvswitch" ]]; then
         add_nova_flag "--libvirt_vif_type=ethernet"
         add_nova_flag "--libvirt_vif_driver=nova.virt.libvirt.vif.LibvirtOpenVswitchDriver"
         add_nova_flag "--linuxnet_interface_driver=nova.network.linux_net.LinuxOVSInterfaceDriver"
@@ -1208,7 +1155,7 @@ if [[ "$ENABLED_SERVICES" =~ "quantum" ]]; then
 else
     add_nova_flag "--network_manager=nova.network.manager.$NET_MAN"
 fi
-if [[ "$ENABLED_SERVICES" =~ "n-vol" ]]; then
+if is_service_enabled n-vol; then
     add_nova_flag "--volume_group=$VOLUME_GROUP"
     add_nova_flag "--volume_name_template=${VOLUME_NAME_PREFIX}%08x"
     # oneiric no longer supports ietadm
@@ -1221,11 +1168,11 @@ add_nova_flag "--vlan_interface=$VLAN_INTERFACE"
 add_nova_flag "--sql_connection=$BASE_SQL_CONN/nova"
 add_nova_flag "--libvirt_type=$LIBVIRT_TYPE"
 add_nova_flag "--instance_name_template=${INSTANCE_NAME_PREFIX}%08x"
-if [[ "$ENABLED_SERVICES" =~ "n-novnc" ]]; then
+# All nova-compute workers need to know the vnc configuration options
+# These settings don't hurt anything if n-xvnc and n-novnc are disabled
+if is_service_enabled n-cpu; then
     NOVNCPROXY_URL=${NOVNCPROXY_URL:-"http://$SERVICE_HOST:6080/vnc_auto.html"}
     add_nova_flag "--novncproxy_base_url=$NOVNCPROXY_URL"
-fi
-if [[ "$ENABLED_SERVICES" =~ "n-xvnc" ]]; then
     XVPVNCPROXY_URL=${XVPVNCPROXY_URL:-"http://$SERVICE_HOST:6081/console"}
     add_nova_flag "--xvpvncproxy_base_url=$XVPVNCPROXY_URL"
 fi
@@ -1239,7 +1186,7 @@ fi
 VNCSERVER_LISTEN=${VNCSERVER_LISTEN=127.0.0.1}
 add_nova_flag "--vncserver_listen=$VNCSERVER_LISTEN"
 add_nova_flag "--vncserver_proxyclient_address=$VNCSERVER_PROXYCLIENT_ADDRESS"
-add_nova_flag "--api_paste_config=$NOVA_DIR/bin/nova-api-paste.ini"
+add_nova_flag "--api_paste_config=$NOVA_CONF/api-paste.ini"
 add_nova_flag "--image_service=nova.image.glance.GlanceImageService"
 add_nova_flag "--ec2_dmz_host=$EC2_DMZ_HOST"
 add_nova_flag "--rabbit_host=$RABBIT_HOST"
@@ -1302,58 +1249,13 @@ fi
 # All nova components talk to a central database.  We will need to do this step
 # only once for an entire cluster.
 
-if [[ "$ENABLED_SERVICES" =~ "mysql" ]]; then
+if is_service_enabled mysql; then
     # (re)create nova database
     mysql -u$MYSQL_USER -p$MYSQL_PASSWORD -e 'DROP DATABASE IF EXISTS nova;'
     mysql -u$MYSQL_USER -p$MYSQL_PASSWORD -e 'CREATE DATABASE nova;'
 
     # (re)create nova database
     $NOVA_DIR/bin/nova-manage db sync
-fi
-
-
-# Keystone
-# --------
-
-if [[ "$ENABLED_SERVICES" =~ "key" ]]; then
-    # (re)create keystone database
-    mysql -u$MYSQL_USER -p$MYSQL_PASSWORD -e 'DROP DATABASE IF EXISTS keystone;'
-    mysql -u$MYSQL_USER -p$MYSQL_PASSWORD -e 'CREATE DATABASE keystone;'
-
-    # Configure keystone.conf
-    KEYSTONE_CONF=$KEYSTONE_DIR/etc/keystone.conf
-    cp $FILES/keystone.conf $KEYSTONE_CONF
-    sudo sed -e "s,%SQL_CONN%,$BASE_SQL_CONN/keystone,g" -i $KEYSTONE_CONF
-    sudo sed -e "s,%DEST%,$DEST,g" -i $KEYSTONE_CONF
-
-    # keystone_data.sh creates our admin user and our ``SERVICE_TOKEN``.
-    KEYSTONE_DATA=$KEYSTONE_DIR/bin/keystone_data.sh
-    cp $FILES/keystone_data.sh $KEYSTONE_DATA
-    sudo sed -e "
-        s,%KEYSTONE_AUTH_HOST%,$KEYSTONE_AUTH_HOST,g;
-        s,%KEYSTONE_AUTH_PORT%,$KEYSTONE_AUTH_PORT,g;
-        s,%KEYSTONE_AUTH_PROTOCOL%,$KEYSTONE_AUTH_PROTOCOL,g;
-        s,%KEYSTONE_SERVICE_HOST%,$KEYSTONE_SERVICE_HOST,g;
-        s,%KEYSTONE_SERVICE_PORT%,$KEYSTONE_SERVICE_PORT,g;
-        s,%KEYSTONE_SERVICE_PROTOCOL%,$KEYSTONE_SERVICE_PROTOCOL,g;
-        s,%SERVICE_HOST%,$SERVICE_HOST,g;
-        s,%SERVICE_TOKEN%,$SERVICE_TOKEN,g;
-        s,%ADMIN_PASSWORD%,$ADMIN_PASSWORD,g;
-    " -i $KEYSTONE_DATA
-
-    # Prepare up the database
-    $KEYSTONE_DIR/bin/keystone-manage sync_database
-
-    # initialize keystone with default users/endpoints
-    ENABLED_SERVICES=$ENABLED_SERVICES BIN_DIR=$KEYSTONE_DIR/bin bash $KEYSTONE_DATA
-
-    if [ "$SYSLOG" != "False" ]; then
-        sed -i -e '/^handlers=devel$/s/=devel/=production/' \
-            $KEYSTONE_DIR/etc/logging.cnf
-        sed -i -e "/^log_file/s/log_file/\#log_file/" \
-            $KEYSTONE_DIR/etc/keystone.conf
-        KEYSTONE_LOG_CONFIG="--log-config $KEYSTONE_DIR/etc/logging.cnf"
-    fi
 fi
 
 
@@ -1367,34 +1269,29 @@ fi
 # our screen helper to launch a service in a hidden named screen
 function screen_it {
     NL=`echo -ne '\015'`
-    if [[ "$ENABLED_SERVICES" =~ "$1" ]]; then
-        if [[ "$USE_TMUX" =~ "yes" ]]; then
-            tmux new-window -t stack -a -n "$1" "bash"
-            tmux send-keys "$2" C-M
-        else
-            screen -S stack -X screen -t $1
-            # sleep to allow bash to be ready to be send the command - we are
-            # creating a new window in screen and then sends characters, so if
-            # bash isn't running by the time we send the command, nothing happens
-            sleep 1.5
-            screen -S stack -p $1 -X stuff "$2$NL"
-        fi
+    if is_service_enabled $1; then
+        screen -S stack -X screen -t $1
+        # sleep to allow bash to be ready to be send the command - we are
+        # creating a new window in screen and then sends characters, so if
+        # bash isn't running by the time we send the command, nothing happens
+        sleep 1.5
+        screen -S stack -p $1 -X stuff "$2$NL"
     fi
 }
 
 # create a new named screen to run processes in
-screen -d -m -S stack -t stack
+screen -d -m -S stack -t stack -s /bin/bash
 sleep 1
 # set a reasonable statusbar
 screen -r stack -X hardstatus alwayslastline "%-Lw%{= BW}%50>%n%f* %t%{-}%+Lw%< %= %H"
 
 # launch the glance registry service
-if [[ "$ENABLED_SERVICES" =~ "g-reg" ]]; then
+if is_service_enabled g-reg; then
     screen_it g-reg "cd $GLANCE_DIR; bin/glance-registry --config-file=etc/glance-registry.conf"
 fi
 
 # launch the glance api and wait for it to answer before continuing
-if [[ "$ENABLED_SERVICES" =~ "g-api" ]]; then
+if is_service_enabled g-api; then
     screen_it g-api "cd $GLANCE_DIR; bin/glance-api --config-file=etc/glance-api.conf"
     echo "Waiting for g-api ($GLANCE_HOSTPORT) to start..."
     if ! timeout $SERVICE_TIMEOUT sh -c "while ! http_proxy= wget -q -O- http://$GLANCE_HOSTPORT; do sleep 1; done"; then
@@ -1403,18 +1300,56 @@ if [[ "$ENABLED_SERVICES" =~ "g-api" ]]; then
     fi
 fi
 
-# launch the keystone and wait for it to answer before continuing
-if [[ "$ENABLED_SERVICES" =~ "key" ]]; then
-    screen_it key "cd $KEYSTONE_DIR && $KEYSTONE_DIR/bin/keystone --config-file $KEYSTONE_CONF $KEYSTONE_LOG_CONFIG -d"
-    echo "Waiting for keystone to start..."
-    if ! timeout $SERVICE_TIMEOUT sh -c "while ! http_proxy= wget -q -O- $KEYSTONE_SERVICE_PROTOCOL://$KEYSTONE_SERVICE_HOST:$KEYSTONE_SERVICE_PORT; do sleep 1; done"; then
-      echo "keystone did not start"
-      exit 1
+if is_service_enabled key; then
+    # (re)create keystone database
+    mysql -u$MYSQL_USER -p$MYSQL_PASSWORD -e 'DROP DATABASE IF EXISTS keystone;'
+    mysql -u$MYSQL_USER -p$MYSQL_PASSWORD -e 'CREATE DATABASE keystone;'
+
+    # Configure keystone.conf
+    KEYSTONE_CONF=$KEYSTONE_DIR/etc/keystone.conf
+    cp $FILES/keystone.conf $KEYSTONE_CONF
+    sudo sed -e "s,%SQL_CONN%,$BASE_SQL_CONN/keystone,g" -i $KEYSTONE_CONF
+    sudo sed -e "s,%DEST%,$DEST,g" -i $KEYSTONE_CONF
+    sudo sed -e "s,%SERVICE_TOKEN%,$SERVICE_TOKEN,g" -i $KEYSTONE_CONF
+    sudo sed -e "s,%KEYSTONE_DIR%,$KEYSTONE_DIR,g" -i $KEYSTONE_CONF
+
+    KEYSTONE_CATALOG=$KEYSTONE_DIR/etc/default_catalog.templates
+    cp $FILES/default_catalog.templates $KEYSTONE_CATALOG
+    sudo sed -e "s,%SERVICE_HOST%,$SERVICE_HOST,g" -i $KEYSTONE_CATALOG
+
+
+    if [ "$SYSLOG" != "False" ]; then
+        cp $KEYSTONE_DIR/etc/logging.conf.sample $KEYSTONE_DIR/etc/logging.conf
+        sed -i -e '/^handlers=devel$/s/=devel/=production/' \
+            $KEYSTONE_DIR/etc/logging.conf
+        sed -i -e "/^log_file/s/log_file/\#log_file/" \
+            $KEYSTONE_DIR/etc/keystone.conf
+        KEYSTONE_LOG_CONFIG="--log-config $KEYSTONE_DIR/etc/logging.conf"
     fi
 fi
 
+# launch the keystone and wait for it to answer before continuing
+if is_service_enabled key; then
+    screen_it key "cd $KEYSTONE_DIR && $KEYSTONE_DIR/bin/keystone-all --config-file $KEYSTONE_CONF $KEYSTONE_LOG_CONFIG -d --debug"
+    echo "Waiting for keystone to start..."
+    if ! timeout $SERVICE_TIMEOUT sh -c "while ! http_proxy= wget -q -O- $KEYSTONE_SERVICE_PROTOCOL://$KEYSTONE_SERVICE_HOST:$KEYSTONE_SERVICE_PORT/v2.0/; do sleep 1; done"; then
+      echo "keystone did not start"
+      exit 1
+    fi
+
+    # initialize keystone with default users/endpoints
+    pushd $KEYSTONE_DIR
+    $KEYSTONE_DIR/bin/keystone-manage db_sync
+    popd
+
+    # keystone_data.sh creates services, admin and demo users, and roles.
+    SERVICE_ENDPOINT=$KEYSTONE_AUTH_PROTOCOL://$KEYSTONE_AUTH_HOST:$KEYSTONE_AUTH_PORT/v2.0
+    ADMIN_PASSWORD=$ADMIN_PASSWORD SERVICE_TOKEN=$SERVICE_TOKEN SERVICE_ENDPOINT=$SERVICE_ENDPOINT DEVSTACK_DIR=$TOP_DIR ENABLED_SERVICES=$ENABLED_SERVICES bash $FILES/keystone_data.sh
+fi
+
+
 # launch the nova-api and wait for it to answer before continuing
-if [[ "$ENABLED_SERVICES" =~ "n-api" ]]; then
+if is_service_enabled n-api; then
     screen_it n-api "cd $NOVA_DIR && $NOVA_DIR/bin/nova-api"
     echo "Waiting for nova-api to start..."
     if ! timeout $SERVICE_TIMEOUT sh -c "while ! http_proxy= wget -q -O- http://127.0.0.1:8774; do sleep 1; done"; then
@@ -1424,13 +1359,13 @@ if [[ "$ENABLED_SERVICES" =~ "n-api" ]]; then
 fi
 
 # Quantum service
-if [[ "$ENABLED_SERVICES" =~ "q-svc" ]]; then
+if is_service_enabled q-svc; then
     if [[ "$Q_PLUGIN" = "openvswitch" ]]; then
         # Install deps
         # FIXME add to files/apts/quantum, but don't install if not needed!
         apt_get install openvswitch-switch openvswitch-datapath-dkms
         # Create database for the plugin/agent
-        if [[ "$ENABLED_SERVICES" =~ "mysql" ]]; then
+        if is_service_enabled mysql; then
             mysql -u$MYSQL_USER -p$MYSQL_PASSWORD -e 'DROP DATABASE IF EXISTS ovs_quantum;'
             mysql -u$MYSQL_USER -p$MYSQL_PASSWORD -e 'CREATE DATABASE IF NOT EXISTS ovs_quantum;'
         else
@@ -1445,7 +1380,7 @@ if [[ "$ENABLED_SERVICES" =~ "q-svc" ]]; then
 fi
 
 # Quantum agent (for compute nodes)
-if [[ "$ENABLED_SERVICES" =~ "q-agt" ]]; then
+if is_service_enabled q-agt; then
     if [[ "$Q_PLUGIN" = "openvswitch" ]]; then
         # Set up integration bridge
         OVS_BRIDGE=${OVS_BRIDGE:-br-int}
@@ -1462,8 +1397,8 @@ if [[ "$ENABLED_SERVICES" =~ "q-agt" ]]; then
 fi
 
 # Melange service
-if [[ "$ENABLED_SERVICES" =~ "m-svc" ]]; then
-    if [[ "$ENABLED_SERVICES" =~ "mysql" ]]; then
+if is_service_enabled m-svc; then
+    if is_service_enabled mysql; then
         mysql -u$MYSQL_USER -p$MYSQL_PASSWORD -e 'DROP DATABASE IF EXISTS melange;'
         mysql -u$MYSQL_USER -p$MYSQL_PASSWORD -e 'CREATE DATABASE melange;'
     else
@@ -1485,11 +1420,11 @@ fi
 
 # If we're using Quantum (i.e. q-svc is enabled), network creation has to
 # happen after we've started the Quantum service.
-if [[ "$ENABLED_SERVICES" =~ "mysql" ]]; then
+if is_service_enabled mysql; then
     # create a small network
     $NOVA_DIR/bin/nova-manage network create private $FIXED_RANGE 1 $FIXED_NETWORK_SIZE
 
-    if [[ "$ENABLED_SERVICES" =~ "q-svc" ]]; then
+    if is_service_enabled q-svc; then
         echo "Not creating floating IPs (not supported by QuantumManager)"
     else
         # create some floating ips
@@ -1512,16 +1447,16 @@ screen_it n-obj "cd $NOVA_DIR && $NOVA_DIR/bin/nova-objectstore"
 screen_it n-vol "cd $NOVA_DIR && $NOVA_DIR/bin/nova-volume"
 screen_it n-net "cd $NOVA_DIR && $NOVA_DIR/bin/nova-network"
 screen_it n-sch "cd $NOVA_DIR && $NOVA_DIR/bin/nova-scheduler"
-if [[ "$ENABLED_SERVICES" =~ "n-novnc" ]]; then
+if is_service_enabled n-novnc; then
     screen_it n-novnc "cd $NOVNC_DIR && ./utils/nova-novncproxy --flagfile $NOVA_DIR/bin/nova.conf --web ."
 fi
-if [[ "$ENABLED_SERVICES" =~ "n-xvnc" ]]; then
+if is_service_enabled n-xvnc; then
     screen_it n-xvnc "cd $NOVA_DIR && ./bin/nova-xvpvncproxy --flagfile $NOVA_DIR/bin/nova.conf"
 fi
-if [[ "$ENABLED_SERVICES" =~ "n-cauth" ]]; then
+if is_service_enabled n-cauth; then
     screen_it n-cauth "cd $NOVA_DIR && ./bin/nova-consoleauth"
 fi
-if [[ "$ENABLED_SERVICES" =~ "horizon" ]]; then
+if is_service_enabled horizon; then
     screen_it horizon "cd $HORIZON_DIR && sudo tail -f /var/log/apache2/error.log"
 fi
 
@@ -1541,9 +1476,13 @@ fi
 #  * **natty**: http://uec-images.ubuntu.com/natty/current/natty-server-cloudimg-amd64.tar.gz
 #  * **oneiric**: http://uec-images.ubuntu.com/oneiric/current/oneiric-server-cloudimg-amd64.tar.gz
 
-if [[ "$ENABLED_SERVICES" =~ "g-reg" ]]; then
+if is_service_enabled g-reg; then
     # Create a directory for the downloaded image tarballs.
     mkdir -p $FILES/images
+
+    ADMIN_USER=admin
+    ADMIN_TENANT=admin
+    TOKEN=`curl -s -d  "{\"auth\":{\"passwordCredentials\": {\"username\": \"$ADMIN_USER\", \"password\": \"$ADMIN_PASSWORD\"}, \"tenantName\": \"$ADMIN_TENANT\"}}" -H "Content-type: application/json" http://$HOST_IP:5000/v2.0/tokens | python -c "import sys; import json; tok = json.loads(sys.stdin.read()); print tok['access']['token']['id'];"`
 
     # Option to upload legacy ami-tty, which works with xenserver
     if [ $UPLOAD_LEGACY_TTY ]; then
@@ -1552,11 +1491,11 @@ if [[ "$ENABLED_SERVICES" =~ "g-reg" ]]; then
         fi
 
         tar -zxf $FILES/tty.tgz -C $FILES/images
-        RVAL=`glance add -A $SERVICE_TOKEN name="tty-kernel" is_public=true container_format=aki disk_format=aki < $FILES/images/aki-tty/image`
+        RVAL=`glance add -A $TOKEN name="tty-kernel" is_public=true container_format=aki disk_format=aki < $FILES/images/aki-tty/image`
         KERNEL_ID=`echo $RVAL | cut -d":" -f2 | tr -d " "`
-        RVAL=`glance add -A $SERVICE_TOKEN name="tty-ramdisk" is_public=true container_format=ari disk_format=ari < $FILES/images/ari-tty/image`
+        RVAL=`glance add -A $TOKEN name="tty-ramdisk" is_public=true container_format=ari disk_format=ari < $FILES/images/ari-tty/image`
         RAMDISK_ID=`echo $RVAL | cut -d":" -f2 | tr -d " "`
-        glance add -A $SERVICE_TOKEN name="tty" is_public=true container_format=ami disk_format=ami kernel_id=$KERNEL_ID ramdisk_id=$RAMDISK_ID < $FILES/images/ami-tty/image
+        glance add -A $TOKEN name="tty" is_public=true container_format=ami disk_format=ami kernel_id=$KERNEL_ID ramdisk_id=$RAMDISK_ID < $FILES/images/ami-tty/image
     fi
 
     for image_url in ${IMAGE_URLS//,/ }; do
@@ -1603,14 +1542,14 @@ if [[ "$ENABLED_SERVICES" =~ "g-reg" ]]; then
         # kernel for use when uploading the root filesystem.
         KERNEL_ID=""; RAMDISK_ID="";
         if [ -n "$KERNEL" ]; then
-            RVAL=`glance add -A $SERVICE_TOKEN name="$IMAGE_NAME-kernel" is_public=true container_format=aki disk_format=aki < "$KERNEL"`
+            RVAL=`glance add -A $TOKEN name="$IMAGE_NAME-kernel" is_public=true container_format=aki disk_format=aki < "$KERNEL"`
             KERNEL_ID=`echo $RVAL | cut -d":" -f2 | tr -d " "`
         fi
         if [ -n "$RAMDISK" ]; then
-            RVAL=`glance add -A $SERVICE_TOKEN name="$IMAGE_NAME-ramdisk" is_public=true container_format=ari disk_format=ari < "$RAMDISK"`
+            RVAL=`glance add -A $TOKEN name="$IMAGE_NAME-ramdisk" is_public=true container_format=ari disk_format=ari < "$RAMDISK"`
             RAMDISK_ID=`echo $RVAL | cut -d":" -f2 | tr -d " "`
         fi
-        glance add -A $SERVICE_TOKEN name="${IMAGE_NAME%.img}" is_public=true container_format=ami disk_format=ami ${KERNEL_ID:+kernel_id=$KERNEL_ID} ${RAMDISK_ID:+ramdisk_id=$RAMDISK_ID} < <(zcat --force "${IMAGE}")
+        glance add -A $TOKEN name="${IMAGE_NAME%.img}" is_public=true container_format=ami disk_format=ami ${KERNEL_ID:+kernel_id=$KERNEL_ID} ${RAMDISK_ID:+ramdisk_id=$RAMDISK_ID} < <(zcat --force "${IMAGE}")
     done
 fi
 
@@ -1628,12 +1567,12 @@ echo ""
 
 # If you installed the horizon on this server, then you should be able
 # to access the site using your browser.
-if [[ "$ENABLED_SERVICES" =~ "horizon" ]]; then
+if is_service_enabled horizon; then
     echo "horizon is now available at http://$SERVICE_HOST/"
 fi
 
 # If keystone is present, you can point nova cli to this server
-if [[ "$ENABLED_SERVICES" =~ "key" ]]; then
+if is_service_enabled key; then
     echo "keystone is serving at $KEYSTONE_SERVICE_PROTOCOL://$KEYSTONE_SERVICE_HOST:$KEYSTONE_SERVICE_PORT/v2.0/"
     echo "examples on using novaclient command line is in exercise.sh"
     echo "the default users are: admin and demo"

@@ -23,6 +23,19 @@ if [ ! -e $XVA ]; then
     exit 1
 fi
 
+# Make sure we have git
+if ! which git; then
+    GITDIR=/tmp/git-1.7.7
+    cd /tmp
+    rm -rf $GITDIR*
+    wget http://git-core.googlecode.com/files/git-1.7.7.tar.gz
+    tar xfv git-1.7.7.tar.gz
+    cd $GITDIR
+    ./configure
+    make install
+    cd $TOP_DIR
+fi
+
 # Helper to create networks
 # Uses echo trickery to return network uuid
 function create_network() {
@@ -120,6 +133,24 @@ echo 1 > /proc/sys/net/ipv4/ip_forward
 # Set local storage il8n
 SR_UUID=`xe sr-list --minimal name-label="Local storage"`
 xe sr-param-set uuid=$SR_UUID other-config:i18n-key=local-storage
+
+# Clean nova if desired
+if [ "$CLEAN" = "1" ]; then
+    rm -rf $TOP_DIR/nova
+fi
+
+# Checkout nova
+if [ ! -d $TOP_DIR/nova ]; then
+    git clone $NOVA_REPO
+    cd $TOP_DIR/nova
+    git checkout $NOVA_BRANCH
+fi 
+
+# Install plugins
+cp -pr $TOP_DIR/nova/plugins/xenserver/xenapi/etc/xapi.d /etc/
+chmod a+x /etc/xapi.d/plugins/*
+yum --enablerepo=base install -y parted
+mkdir -p /boot/guest
 
 # Shutdown previous runs
 DO_SHUTDOWN=${DO_SHUTDOWN:-1}
