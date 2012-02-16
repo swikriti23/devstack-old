@@ -15,18 +15,13 @@ MGT_IP=${MGT_IP:-172.16.100.55}
 PUB_IP=${PUB_IP:-192.168.1.55}
 
 # Public network
-<<<<<<< HEAD
 PUB_BR=${PUB_BR:-"xenbr0"}
 PUB_DEV=${PUB_DEV:-eth0}
 PUB_VLAN=${PUB_VLAN:--1}
-=======
-PUB_BR=${PUB_BR:-xenbr0}
->>>>>>> cbmaster
 PUB_NETMASK=${PUB_NETMASK:-255.255.255.0}
 
 # VM network params
 VM_NETMASK=${VM_NETMASK:-255.255.255.0}
-<<<<<<< HEAD
 VM_BR=${VM_BR:-""}
 VM_VLAN=${VM_VLAN:-100}
 VM_DEV=${VM_DEV:-eth0}
@@ -36,15 +31,6 @@ MGT_NETMASK=${MGT_NETMASK:-255.255.255.0}
 MGT_BR=${MGT_BR:-""}
 MGT_VLAN=${MGT_VLAN:-101}
 MGT_DEV=${MGT_DEV:-eth0}
-=======
-VM_BR=${VM_BR:-xapi1}
-VM_VLAN=${VM_VLAN:-100}
-
-# MGMT network params
-MGT_NETMASK=${MGT_NETMASK:-255.255.255.0}
-MGT_BR=${MGT_BR:-xapi2}
-MGT_VLAN=${MGT_VLAN:-101}
->>>>>>> cbmaster
 
 # XVA Directory
 XVA_DIR=${XVA_DIR:-xvas}
